@@ -7,64 +7,287 @@
 
 // INITAILIZE ALL YOUR VARIABLES HERE
 
-#define QUANTUM 20000                         // in 20 ms
+#define QUANTUM 10                          // in ms
 #define LOCK 1  //used to represent LOCKED
 #define UNLOCK 0    //used to represent UNLOCKED
 #define STACK_SIZE 1048576 //1 MB stack size
 
-tcb* current_thread = NULL;
 
-queue *reeady_queue = NULL;
+
+// YOUR CODE HERE
+//_Atomic 
+
+//queue initialization
+queue* queue_init() {
+    queue* q = (queue*) malloc(sizeof(queue));
+    q->head = NULL;
+    q->tail = NULL;
+    q->size = 0;
+    return q;
+}
+
+// Append the new node to the back of the queue
+void enqueue (queue* queue, tcb *tcb ) {
+    queue_node* queue_node = malloc(sizeof(queue_node));
+    queue_node -> tcb = tcb;
+    queue_node -> next = NULL; // At back of the queue, there is no next node.
+
+    if (queue->tail == NULL) { // If the Queue is currently empty
+        queue->head = queue_node;
+        queue->tail = queue_node;
+    } else {
+        queue->tail->next = queue_node;
+        queue->head = queue_node;
+    }
+    ++(queue->size);
+    return;
+}
+
+// Remove a QueueNode from the front of the Queue
+tcb* dequeue (queue* queue ) {
+
+    if (queue->size == 0) { // If the Queue is currently empty
+        return NULL;
+    } else {
+
+        // The QueueNode at front of the queue to be removed
+        queue_node* temp = queue->head;
+        tcb* tcb = temp->tcb;
+
+        queue->head = temp->next;
+        --(queue->size);
+        if (queue->tail == temp) { // If the Queue will become empty
+            queue->tail = NULL;
+        }
+
+        free(temp);
+        return tcb;
+    }
+}
+
+
+
+
+static inline int left_child(int index)
+{
+    return (2 * index + 1);
+}
+
+static inline int right_child(int index)
+{
+    return (2 * index + 2);
+}
+
+static inline int parent(int index)
+{
+    return ((index - 1) / 2);
+}
+
+
+min_heap heap_init(int capacity)
+{
+    min_heap heap = (min_heap)
+    {
+        .capacity = capacity, 
+        .size = 0
+    };
+    return heap;
+}
+
+static inline void swap(tcb *t1, tcb *t2)
+{
+    tcb temp = *t1;
+    *t1 = *t2;
+    *t2 = temp;
+}
+
+
+void heapify(min_heap *heap, int index)
+{
+    int min = 0;
+    if(left_child(index) < heap->size && heap->data[left_child(index)].priority < heap->data[index].priority)
+    {
+        min = left_child(index);
+    }
+    else
+    {
+        min = index;
+    }
+
+    if(right_child(index) < heap->size && heap->data[right_child(index)].priority < heap->data[min].priority)
+    {
+        min = right_child(index);
+    }
+
+    if(min != index)
+    {
+        swap(&(heap->data[index]), &(heap->data[min]));
+        heapify(heap, min);
+    }
+}
+
+
+void insert(min_heap *heap, tcb data)
+{
+    if(heap->size && heap->capacity)
+    {
+        if(heap->size >= heap->capacity)
+        {
+            heap->capacity *= 2;
+            heap->data = realloc( heap->data, sizeof (tcb) * heap->capacity );
+        }
+    }
+    else if(!heap->capacity)
+    {
+        heap->capacity ++;
+        heap->data = malloc( sizeof (tcb) * heap->capacity );
+    }
+
+    tcb temp = { 0 };
+	memcpy( &temp, data,  sizeof (tcb) );
+
+    
+    int index = heap->size;
+    heap->size++;
+    while(index && temp.priority < heap->data[parent(index)].priority)
+    {
+        heap->data[index] = heap->data[parent(index)];
+        index = parent(index);
+    }
+    heap->data[index] = temp;
+    //heapify(heap, 0);
+}
+
+
+tcb pop_first(min_heap *heap)
+{
+    tcb temp = { 0 };
+    if(heap->size)
+    {
+        temp = { 0 };
+		memcpy( &temp, &heap->data[0], sizeof (tcb) );
+		
+        heap->data[0] = heap->data[-- heap->size];
+        heapify(heap, 0);
+
+        if(heap->size < heap->capacity / 4)
+        {
+            heap->capacity /= 2;
+            heap->data = realloc(heap->data, sizeof(tcb) * heap->capacity);
+        }
+        return temp;
+    }
+    //fprintf(stderr, "The heap is already empty\n");
+    heap->capacity = 0;
+    free(heap->data);
+    heap->data = NULL;  //in case a double free happens
+    return temp;        
+}
+
+
+
+
+
+
+
+
 //global variable
-
-struct itimerval timer;
+static _Atomic struct sigaction sa = { 0 };
+static _Atomic struct itimerval timer = { 0 };
 static bool init = false;
+#ifdef PSJF
 static min_heap thread_pool = { 0 };
-uint8_t tid_counter = 0;
+#endif 	//PSJF
+#ifdef RR
+static queue thread_pool = { 0 }；
+#endif 	//RR
+mypthread_t tid_counter = 0;
 ucontext_t scheduler_context = { 0 };
-ucontext_t main_context = { 0 };
+//ucontext_t main_context = { 0 };
 
-//initialize the timer
-void init_timer() {
-    // timer start immediately
-    timer.it_value.tv_sec = 0;
-    timer.it_value.tv_usec = 0;
-
-    // timer interval
-    timer.it_interval.tv_sec = 0;
-    timer.it_interval.tv_usec = QUANTUM;
-    setitimer(ITIMER_VIRTUAL, &timer, NULL);
-}
-
-// restart the timer
-void start_timer(){
-    setitimer(ITIMER_VIRTUAL, &timer, 0);
-}
-
-// stop the timer
-void stop_timer() {
-    setitimer(ITIMER_VIRTUAL, 0, 0);
-}
+#define STACK_SIZE 1024*1024			// 1MB stack size
 
 
 /* create a new thread */
+static void wrapper( tcb* thread )
+{
+	void* result = thread->func( thread->args );
+	thread->return_val = result;
+	thread->status = finished;
+	return;
+}
+
 int mypthread_create(mypthread_t * thread, pthread_attr_t * attr, void *(*function)(void*), void * arg)
 {
 	// YOUR CODE HERE	
-    
+
 	// create a Thread Control Block
 	// create and initialize the context of this thread
 	// allocate heap space for this thread's stack
 	// after everything is all set, push this thread into the ready queue
-    
-    // initialize the ready_queue if it's empty 
-    if(reeady_queue == NULL){
-        reeady_queue = queue_init();
-    }
-    tcb *thread = (tcb*)malloc(sizeof(tcb));
+
+	if ( !init )
+	{
+		//thread_pool init
+		#ifdef PSJF
+		thread_pool = heap_init( 0 );
+		#endif 	// PSJF
+		#ifdef RR
+		thread_pool = queue_init();
+		#endif 	// RR
+		if( getcontext( &scheduler_context ) == -1 )
+		{
+			retrurn -1;
+		}
+		scheduler_context.uc_link = 0;
+		scheduler_context.uc_stack.ss_sp = malloc( STACK_SIZE );
+		scheduler_context.uc_stack.ss_size = STACK_SIZE;
+
+		makecontext( &scheduler_context, schedule, 1, NULL );
+
+		//set signal handler and timer
+		sa.sa_handler = &schedule;
+		sigaction( SIGVTALRM, &sa, NULL );
+
+		timer = ( struct itimerval )
+		{
+			.it_value.tv_usec 	= QUANTUM,
+		};
+		setitimer( ITIMER_VIRTUAL, &timer, NULL );
+
+		init = true;
+	}
+
+	tcb* temp = malloc( sizeof (tcb) );
+	*temp = (tcb) 
+	{ 
+		.tid = tid_counter++,
+		.status = waiting,
+		.context = malloc( sizeof (ucontext_t) ),
+		.func = function,
+		.args = arg
+	};
+	if ( getcontext( temp->context ) == -1 )
+	{
+		return -1;
+	}
+	temp->context->uc_link = &scheduler_context;
+	temp->context->uc_stack.ss_sp = malloc( STACK_SIZE );
+	temp->context->uc_stack.ss_size = STACK_SIZE;
+
+	makecontext( temp->context, wrapper, 1, temp );
+
+	//insert tcb onto the heap/arraylist
+	#ifdef RR
+	// use queue for RR
+
+	#endif	// RR
+
+	#ifdef PSJF
 
 
-
+	#endif	// PSJF
+	// use min heap for PSJF
 
 	return 0;
 };
@@ -77,6 +300,7 @@ int mypthread_yield()
 	// change current thread's state from Running to Ready
 	// save context of this thread to its thread control block
 	// switch from this thread's context to the scheduler's context
+	kill( getpid(), SIGVTALRM );
 
 	return 0;
 };
@@ -100,6 +324,22 @@ int mypthread_join(mypthread_t thread, void **value_ptr)
 
 	// wait for a specific thread to terminate
 	// deallocate any dynamic memory created by the joining thread
+	#ifdef RR
+
+
+
+	#endif 	// RR
+
+	#ifdef PSJF
+
+
+
+	#endif 	// PSJF
+
+
+
+
+
 
 	return 0;
 };
@@ -184,6 +424,11 @@ static void schedule( int sig )
 	// be sure to check the SCHED definition to determine which scheduling algorithm you should run
 	//   i.e. RR, PSJF or MLFQ
 
+	// turn off the timer to prevent scheduler being called inside scheduler. 
+	timer = { 0 };
+	setitimer( ITIMER_VIRTUAL, &timer, NULL );
+
+	
 
 	return;
 }
@@ -224,52 +469,3 @@ static void sched_MLFQ() {
 // Feel free to add any other functions you need
 
 // YOUR CODE HERE
-
-
-//queue initialization
-queue* queue_init() {
-    queue* q = (queue*) malloc(sizeof(queue));
-    q->head = NULL;
-    q->tail = NULL;
-    q->size = 0;
-    return q;
-}
-
-// Append the new node to the back of the queue
-void enqueue (queue* queue, tcb *tcb ) {
-    queue_node* queue_node = malloc(sizeof(queue_node));
-    queue_node -> tcb = tcb;
-    queue_node -> next = NULL; // At back of the queue, there is no next node.
-
-    if (queue->tail == NULL) { // If the Queue is currently empty
-        queue->head = queue_node;
-        queue->tail = queue_node;
-    } else {
-        queue->tail->next = queue_node;
-        queue->head = queue_node;
-    }
-    ++(queue->size);
-    return;
-}
-
-// Remove a QueueNode from the front of the Queue
-tcb* dequeue (queue* queue ) {
-
-    if (queue->size == 0) { // If the Queue is currently empty
-        return NULL;
-    } else {
-
-        // The QueueNode at front of the queue to be removed
-        queue_node* temp = queue->head;
-        tcb* tcb = temp->tcb;
-
-        queue->head = temp->next;
-        --(queue->size);
-        if (queue->tail == temp) { // If the Queue will become empty
-            queue->tail = NULL;
-        }
-
-        free(temp);
-        return tcb;
-    }
-}
