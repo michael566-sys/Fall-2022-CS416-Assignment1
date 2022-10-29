@@ -31,7 +31,7 @@ typedef uint mypthread_t;
 
 typedef enum thread_status
 {
-    waiting, running
+    waiting, running, ready, finished
 }thread_status;
 
 typedef struct threadControlBlock
