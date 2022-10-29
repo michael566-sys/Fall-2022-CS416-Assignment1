@@ -37,12 +37,20 @@ typedef struct threadControlBlock
 	// thread priority
 	// And more ...
 
-    mypthread_t tid;
-    uint8_t     status;
-    ucontext_t  context;
+    mypthread_t tid;                //thread id
+    int         status;             //running? waiting?
+    ucontext_t* context;            //ucontext_t
     uint8_t     priority;           //priority: lower is better, 0 means not ready
-    
+    void*       (*func)(void*);     //function pointer
+    void*       args;               //arguments
+    void*       return_val;         //return value
+
 } tcb;
+
+typedef enum thread_status
+{
+    waiting, running
+}thread_status;
 
 /* mutex struct definition */
 typedef struct mypthread_mutex_t
@@ -55,21 +63,29 @@ typedef struct mypthread_mutex_t
 } mypthread_mutex_t;
 
 
-// Feel free to add your own auxiliary data structures (linked list or queue etc...)
-typedef struct node
+typedef struct min_heap
 {
-    tcb *thread;
-    struct node* next;
-}node;
+    int capacity;       //capacity of the mean heap
+    int size;           //current heap_size
+    tcb tcb;
+}min_heap;
 
-typedef struct queue
-{
-    node* head, *tail;
-}queue;
+
+//would like to use macros, but macros don't work with ctypes
+static inline int left_child(int index);            //get left child index
+static inline int right_child(int index);           //get right child index
+static inline int parent(int index);                //get parent index
+
+min_heap heap_init(int capacity);                   //init min heap (insert the initial capacity)
+static inline void swap(tcb *v1, tcb *v2);          //swap nodes(tcb)
+void heapify(min_heap *heap, int index);            //heapify
+void insert(min_heap *heap, vertex data);           //insert vertex into the heap, heapify will be called automatically
+vertex pop_first(min_heap *heap);                   
 
 
 
 /* Function Declarations: */
+void scheduler( int sig );
 
 /* create a new thread */
 int mypthread_create(mypthread_t * thread, pthread_attr_t * attr, void *(*function)(void*), void * arg);

@@ -15,32 +15,120 @@
 //_Atomic 
 
 
-
-void queue_push( queue* q, tcb* thread )
+static inline int left_child(int index)
 {
-    node* temp = malloc( sizeof (node) );
-    temp->thread = thread;
+    return (2 * index + 1);
+}
 
-    if ( q->head == q->tail == NULL )
+static inline int right_child(int index)
+{
+    return (2 * index + 2);
+}
+
+static inline int parent(int index)
+{
+    return ((index - 1) / 2);
+}
+
+
+min_heap heap_init(int capacity)
+{
+    min_heap heap = (min_heap)
     {
-        q = malloc( sizeof (queue) );
-        q->head = q->tail = temp;
+        .capacity = capacity, 
+        .size = 0
+    };
+    return heap;
+}
+
+static inline void swap(tcb *t1, tcb *t2)
+{
+    tcb temp = *t1;
+    *t1 = *t2;
+    *t2 = temp;
+}
+
+
+void heapify(min_heap *heap, int index)
+{
+    int min = 0;
+    if(left_child(index) < heap->size && heap->data[left_child(index)].priority < heap->data[index].priority)
+    {
+        min = left_child(index);
     }
     else
     {
-        q->tail->next = temp;
-        q->tail = temp;
+        min = index;
+    }
+
+    if(right_child(index) < heap->size && heap->data[right_child(index)].priority < heap->data[min].priority)
+    {
+        min = right_child(index);
+    }
+
+    if(min != index)
+    {
+        swap(&(heap->data[index]), &(heap->data[min]));
+        heapify(heap, min);
     }
 }
 
-tcb* queue_pop( queue* q )
-{
-    node* temp = q->head;
-    q->head = temp->next;
 
-    tcb* thread = temp->thread;
-    free(temp);
-    return thread;
+void insert(min_heap *heap, tcb data)
+{
+    if(heap->size && heap->capacity)
+    {
+        if(heap->size >= heap->capacity)
+        {
+            heap->capacity *= 2;
+            heap->data = realloc( heap->data, sizeof (tcb) * heap->capacity );
+        }
+    }
+    else if(!heap->capacity)
+    {
+        heap->capacity ++;
+        heap->data = malloc( sizeof (tcb) * heap->capacity );
+    }
+
+    tcb temp = { 0 };
+	memcpy( &temp, data,  sizeof (tcb) );
+
+    
+    int index = heap->size;
+    heap->size++;
+    while(index && temp.priority < heap->data[parent(index)].priority)
+    {
+        heap->data[index] = heap->data[parent(index)];
+        index = parent(index);
+    }
+    heap->data[index] = temp;
+    //heapify(heap, 0);
+}
+
+
+tcb pop_first(min_heap *heap)
+{
+    tcb temp = { 0 };
+    if(heap->size)
+    {
+        temp = { 0 };
+		memcpy( &temp, &heap->data[0], sizeof (tcb) );
+		
+        heap->data[0] = heap->data[-- heap->size];
+        heapify(heap, 0);
+
+        if(heap->size < heap->capacity / 4)
+        {
+            heap->capacity /= 2;
+            heap->data = realloc(heap->data, sizeof(tcb) * heap->capacity);
+        }
+        return temp;
+    }
+    //fprintf(stderr, "The heap is already empty\n");
+    heap->capacity = 0;
+    free(heap->data);
+    heap->data = NULL;  //in case a double free happens
+    return temp;        
 }
 
 
@@ -50,6 +138,14 @@ tcb* queue_pop( queue* q )
 
 
 
+
+//global variable
+static _Atomic struct itimerval timer = { 0 };
+static bool init = false;
+static min_heap thread_pool = { 0 };
+uint8_t tid_counter = 0;
+ucontext_t scheduler_context = { 0 };
+ucontext_t main_context = { 0 };
 
 
 
@@ -57,13 +153,12 @@ tcb* queue_pop( queue* q )
 /* create a new thread */
 int mypthread_create(mypthread_t * thread, pthread_attr_t * attr, void *(*function)(void*), void * arg)
 {
-	   // YOUR CODE HERE	
-	
-	   // create a Thread Control Block
-	   // create and initialize the context of this thread
-	   // allocate heap space for this thread's stack
-	   // after everything is all set, push this thread into the ready queue
+	// YOUR CODE HERE	
 
+	// create a Thread Control Block
+	// create and initialize the context of this thread
+	// allocate heap space for this thread's stack
+	// after everything is all set, push this thread into the ready queue
 
 	return 0;
 };
@@ -109,6 +204,9 @@ int mypthread_mutex_init(mypthread_mutex_t *mutex, const pthread_mutexattr_t *mu
 	// YOUR CODE HERE
 	
 	//initialize data structures for this mutex
+	
+
+
 
 	return 0;
 };
@@ -116,13 +214,13 @@ int mypthread_mutex_init(mypthread_mutex_t *mutex, const pthread_mutexattr_t *mu
 /* aquire a mutex lock */
 int mypthread_mutex_lock(mypthread_mutex_t *mutex)
 {
-		// YOUR CODE HERE
+	// YOUR CODE HERE
+
+	// use the built-in test-and-set atomic function to test the mutex
+	// if the mutex is acquired successfully, return
+	// if acquiring mutex fails, put the current thread on the blocked/waiting list and context switch to the scheduler thread
 	
-		// use the built-in test-and-set atomic function to test the mutex
-		// if the mutex is acquired successfully, return
-		// if acquiring mutex fails, put the current thread on the blocked/waiting list and context switch to the scheduler thread
-		
-		return 0;
+	return 0;
 };
 
 /* release the mutex lock */
@@ -148,7 +246,7 @@ int mypthread_mutex_destroy(mypthread_mutex_t *mutex)
 };
 
 /* scheduler */
-static void schedule()
+static void schedule( int sig )
 {
 	// YOUR CODE HERE
 	
@@ -156,6 +254,7 @@ static void schedule()
 	
 	// be sure to check the SCHED definition to determine which scheduling algorithm you should run
 	//   i.e. RR, PSJF or MLFQ
+
 
 	return;
 }
