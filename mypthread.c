@@ -13,6 +13,27 @@
 #define STACK_SIZE 1048576 //1 MB stack size
 
 
+//global variable
+static struct sigaction sa = { 0 };
+static struct itimerval timer = { 0 };
+static bool init = false;
+
+#ifdef PSJF
+static min_heap *thread_pool = NULL;
+#endif 	//PSJF
+
+#ifdef RR
+static queue *thread_pool = NULL；
+#endif 	//RR
+
+mypthread_t tid_counter = 0;
+ucontext_t scheduler_context = { 0 };
+ucontext_t main_context = { 0 };
+tcb *main_tcb = NULL;
+tcb *curr_tcb = NULL;
+
+
+
 
 // YOUR CODE HERE
 //_Atomic 
@@ -36,10 +57,11 @@ void enqueue (queue* queue, tcb *tcb ) {
         queue->head = queue_node;
         queue->tail = queue_node;
     } else {
+		queue_node->prev = queue->tail;
         queue->tail->next = queue_node;
-        queue->head = queue_node;
+        queue->tail = queue_node;
     }
-    ++(queue->size);
+    (queue->size)++;
     return;
 }
 
@@ -105,7 +127,7 @@ static inline void swap(tcb *t1, tcb *t2)
 void heapify(min_heap *heap, int index)
 {
     int min = 0;
-    if(left_child(index) < heap->size && heap->data[left_child(index)].priority < heap->data[index].priority)
+    if(left_child(index) < heap->size && heap->tcb[left_child(index)].priority < heap->tcb[index].priority)
     {
         min = left_child(index);
     }
@@ -114,47 +136,47 @@ void heapify(min_heap *heap, int index)
         min = index;
     }
 
-    if(right_child(index) < heap->size && heap->data[right_child(index)].priority < heap->data[min].priority)
+    if(right_child(index) < heap->size && heap->tcb[right_child(index)].priority < heap->tcb[min].priority)
     {
         min = right_child(index);
     }
 
     if(min != index)
     {
-        swap(&(heap->data[index]), &(heap->data[min]));
+        swap(&(heap->tcb[index]), &(heap->tcb[min]));
         heapify(heap, min);
     }
 }
 
 
-void insert(min_heap *heap, tcb data)
+void insert(min_heap *heap, tcb *thread)
 {
     if(heap->size && heap->capacity)
     {
         if(heap->size >= heap->capacity)
         {
             heap->capacity *= 2;
-            heap->data = realloc( heap->data, sizeof (tcb) * heap->capacity );
+            heap->tcb = realloc( heap->tcb, sizeof (tcb) * heap->capacity );
         }
     }
     else if(!heap->capacity)
     {
-        heap->capacity ++;
-        heap->data = malloc( sizeof (tcb) * heap->capacity );
+        heap->capacity++;
+        heap->tcb = malloc( sizeof (tcb) * heap->capacity );
     }
 
     tcb temp = { 0 };
-	memcpy( &temp, data,  sizeof (tcb) );
+	memcpy( &temp, thread, sizeof (tcb) );
 
     
     int index = heap->size;
     heap->size++;
-    while(index && temp.priority < heap->data[parent(index)].priority)
+    while(index && temp.priority < heap->tcb[parent(index)].priority)
     {
-        heap->data[index] = heap->data[parent(index)];
+        heap->tcb[index] = heap->tcb[parent(index)];
         index = parent(index);
     }
-    heap->data[index] = temp;
+    heap->tcb[index] = temp;
     //heapify(heap, 0);
 }
 
@@ -164,23 +186,22 @@ tcb pop_first(min_heap *heap)
     tcb temp = { 0 };
     if(heap->size)
     {
-        temp = { 0 };
-		memcpy( &temp, &heap->data[0], sizeof (tcb) );
+		memcpy( &temp, &heap->tcb[0], sizeof (tcb) );
 		
-        heap->data[0] = heap->data[-- heap->size];
+        heap->tcb[0] = heap->tcb[-- heap->size];
         heapify(heap, 0);
 
         if(heap->size < heap->capacity / 4)
         {
             heap->capacity /= 2;
-            heap->data = realloc(heap->data, sizeof(tcb) * heap->capacity);
+            heap->tcb = realloc(heap->tcb, sizeof(tcb) * heap->capacity);
         }
         return temp;
     }
     //fprintf(stderr, "The heap is already empty\n");
     heap->capacity = 0;
-    free(heap->data);
-    heap->data = NULL;  //in case a double free happens
+    free(heap->tcb);
+    heap->tcb = NULL;  //in case a double free happens
     return temp;        
 }
 
@@ -191,23 +212,6 @@ tcb pop_first(min_heap *heap)
 
 
 
-//global variable
-static _Atomic struct sigaction sa = { 0 };
-static _Atomic struct itimerval timer = { 0 };
-static bool init = false;
-#ifdef PSJF
-static min_heap thread_pool = { 0 };
-#endif 	//PSJF
-#ifdef RR
-static queue thread_pool = { 0 }；
-#endif 	//RR
-mypthread_t tid_counter = 0;
-ucontext_t scheduler_context = { 0 };
-//ucontext_t main_context = { 0 };
-
-#define STACK_SIZE 1024*1024			// 1MB stack size
-
-
 /* create a new thread */
 static void wrapper( tcb* thread )
 {
@@ -216,7 +220,7 @@ static void wrapper( tcb* thread )
 	thread->status = finished;
 	return;
 }
-
+static void schedule( int sig );
 int mypthread_create(mypthread_t * thread, pthread_attr_t * attr, void *(*function)(void*), void * arg)
 {
 	// YOUR CODE HERE	
@@ -228,16 +232,36 @@ int mypthread_create(mypthread_t * thread, pthread_attr_t * attr, void *(*functi
 
 	if ( !init )
 	{
+		//get main context
+		if ( getcontext ( &main_context ) == -1 )
+		{
+			return -1;
+		}
+		main_context.uc_link = &scheduler_context;
+		//main_context.uc_stack.ss_sp = malloc( 10 * STACK_SIZE );
+		//main_context.uc_stack.ss_size = 10 * STACK_SIZE;
+		main_tcb = malloc( sizeof (tcb) );
+		*main_tcb = (tcb)
+		{
+			.tid = tid_counter++,
+			.status = ready,
+			.context = &main_context,
+			.priority = 0
+		};
+		curr_tcb = main_tcb;
+
 		//thread_pool init
 		#ifdef PSJF
-		thread_pool = heap_init( 0 );
+		*thread_pool = heap_init( 5 );
+
 		#endif 	// PSJF
 		#ifdef RR
 		thread_pool = queue_init();
+		//enqueue( thread_pool, main_tcb )
 		#endif 	// RR
-		if( getcontext( &scheduler_context ) == -1 )
+		if ( getcontext( &scheduler_context ) == -1 )
 		{
-			retrurn -1;
+			return -1;
 		}
 		scheduler_context.uc_link = 0;
 		scheduler_context.uc_stack.ss_sp = malloc( STACK_SIZE );
@@ -280,6 +304,7 @@ int mypthread_create(mypthread_t * thread, pthread_attr_t * attr, void *(*functi
 	//insert tcb onto the heap/arraylist
 	#ifdef RR
 	// use queue for RR
+	enqueue( thread_pool, temp );
 
 	#endif	// RR
 
@@ -306,6 +331,7 @@ int mypthread_yield()
 };
 
 /* terminate a thread */
+/*
 void mypthread_exit(void *value_ptr)
 {
 	// YOUR CODE HERE
@@ -315,6 +341,7 @@ void mypthread_exit(void *value_ptr)
 	
 	return;
 };
+*/
 
 
 /* Wait for thread termination */
@@ -325,7 +352,18 @@ int mypthread_join(mypthread_t thread, void **value_ptr)
 	// wait for a specific thread to terminate
 	// deallocate any dynamic memory created by the joining thread
 	#ifdef RR
-
+	for ( tcb *temp = thread_pool->head; temp->next != NULL; temp = temp->next )
+	{
+		if ( temp->tcb->tid = thread )
+		{
+			while ( temp->tcb->status != finished );
+			void** return_value = &temp->tcb->return_val;
+			free( temp->tcb->context );
+			temp->prev->next = temp->next;
+			free( temp->tcb );
+			free( temp );
+		}
+	}
 
 
 	#endif 	// RR
@@ -425,10 +463,17 @@ static void schedule( int sig )
 	//   i.e. RR, PSJF or MLFQ
 
 	// turn off the timer to prevent scheduler being called inside scheduler. 
-	timer = { 0 };
+	timer = ( struct itimerval ) { 0 };
 	setitimer( ITIMER_VIRTUAL, &timer, NULL );
 
+
+	#ifdef RR
+	sched_RR();
+	#endif 	// RR
 	
+	#ifdef PSJF
+	sched_PSJF();
+	#endif 	// PSJF
 
 	return;
 }
@@ -436,11 +481,30 @@ static void schedule( int sig )
 /* Round Robin scheduling algorithm */
 static void sched_RR()
 {
+	#ifdef RR
 	// YOUR CODE HERE
 	
 	// Your own implementation of RR
 	// (feel free to modify arguments and return types)
+
+	free( scheduler_context.uc_stack.ss_sp );
+	scheduler_context.uc_stack.ss_sp = malloc( STACK_SIZE );
+	makecontext( &scheduler_context, schedule, 1, NULL );
+
+	enqueue( thread_pool, curr_tcb );
+	tcb* temp = curr_tcb;
+	curr_tcb = dequeue( thread_pool );
+
+	timer = ( struct itimerval )
+	{
+		.it_value.tv_usec 	= QUANTUM,
+	};
+	setitimer( ITIMER_VIRTUAL, &timer, NULL );
+
+
+	swapcontext( temp->context, curr_tcb->context );
 	
+	#endif //RR
 	return;
 }
 
@@ -451,6 +515,19 @@ static void sched_PSJF()
 
 	// Your own implementation of PSJF (STCF)
 	// (feel free to modify arguments and return types)
+	free( scheduler_context.uc_stack.ss_sp );
+	scheduler_context.uc_stack.ss_sp = malloc( STACK_SIZE );
+	makecontext( &scheduler_context, schedule, 1, NULL );
+
+
+
+
+	timer = ( struct itimerval )
+	{
+		.it_value.tv_usec 	= QUANTUM,
+	};
+	setitimer( ITIMER_VIRTUAL, &timer, NULL );
+
 
 	return;
 }
