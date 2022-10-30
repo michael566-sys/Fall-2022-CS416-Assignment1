@@ -47,7 +47,7 @@ typedef struct threadControlBlock
 
     mypthread_t     tid;                //thread id
     thread_status   status;             //running, waiting, finish
-    ucontext_t      context;            //ucontext_t
+    ucontext_t      *context;           //ucontext_t
     uint8_t         priority;           //priority: lower is better, 0 means not ready
     void*           (*func)(void*);     //function pointer
     void*           args;               //arguments
@@ -59,6 +59,7 @@ typedef struct threadControlBlock
 // wait node used in mutex
 typedef struct queue_node{
     tcb *tcb;
+    struct queue_node *prev;
     struct queue_node *next;
 } queue_node;
 
@@ -89,7 +90,6 @@ typedef struct min_heap
 }min_heap;
 
 
-//would like to use macros, but macros don't work with ctypes
 static inline int left_child(int index);            //get left child index
 static inline int right_child(int index);           //get right child index
 static inline int parent(int index);                //get parent index
@@ -97,12 +97,13 @@ static inline int parent(int index);                //get parent index
 min_heap heap_init(int capacity);                   //init min heap (insert the initial capacity)
 static inline void swap(tcb *v1, tcb *v2);          //swap nodes(tcb)
 void heapify(min_heap *heap, int index);            //heapify
-void insert(min_heap *heap, tcb data);           //insert vertex into the heap, heapify will be called automatically
+void insert(min_heap *heap, tcb *tcb);              //insert tcb into the heap, heapify will be called automatically
 tcb pop_first(min_heap *heap);                   
 
 queue* queue_init();
 void enqueue (queue* queue, tcb *tcb ); 
 tcb* dequeue (queue* queue );
+
 
 /* Function Declarations: */
 void scheduler( int sig );
@@ -114,7 +115,8 @@ int mypthread_create(mypthread_t * thread, pthread_attr_t * attr, void *(*functi
 int mypthread_yield();
 
 /* terminate a thread */
-void mypthread_exit(void *value_ptr);
+//void mypthread_exit(void *value_ptr);
+#define mypthread_exit( ptr ) return ptr
 
 /* wait for thread termination */
 int mypthread_join(mypthread_t thread, void **value_ptr);
